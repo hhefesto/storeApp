@@ -1,0 +1,40 @@
+# Haskell
+dist/
+dist-newstyle/
+.ghc.environment.*
+cabal.project.local
+cabal.project.local~
+.HTF/
+.hpc
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+*.p_hi
+*.p_o
+
+# GHCJS
+*.jsexe/
+*.js_hi
+*.js_o
+*.js_dyn_hi
+*.js_dyn_o
+
+# Nix
+result
+result-*
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+.direnv/
+.envrc
