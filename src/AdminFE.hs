@@ -8,12 +8,17 @@
 module Main where
 
 import Reflex.Dom
+import qualified Reflex.Dom.Main as R
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Text.Read (readMaybe)
+
+#ifndef ghcjs_HOST_OS
+import qualified Language.Javascript.JSaddle.Warp as JSaddleWrap
+#endif
 
 --------------------------------------------------------------------------------
 -- Entry
@@ -23,7 +28,8 @@ main :: IO ()
 main = mainWidget app
 #else
 main :: IO ()
-main = mainWidgetWithHead headElement app
+main = JSaddleWrap.run 3004 (R.mainWidgetWithHead headElement app)
+-- main = mainWidgetWithHead headElement app
 #endif
 
 headElement :: DomBuilder t m => m ()

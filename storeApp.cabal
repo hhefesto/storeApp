@@ -4,13 +4,101 @@ version:            0.1.0.0
 synopsis:           storeApp - A Reflex FRP application
 description:        A Reflex FRP application that can be built for web, Android, and iOS
 license:            BSD-3-Clause
-author:             Your Name
-maintainer:         your.email@example.com
+author:             hhefesto
+maintainer:         hhefesto@rdataa.com
 category:           Web
 build-type:         Simple
 
-executable storeApp
-  main-is:          Main.hs
+executable saClientFE
+  main-is:          ClientFE.hs
+  hs-source-dirs:   src
+
+  build-depends:
+      base
+    , reflex
+    , reflex-dom
+    , reflex-dom-core
+    , text
+    , time
+    , containers
+    , rel8
+    , aeson
+    , hasql
+
+  if !impl(ghcjs)
+    build-depends:
+        jsaddle
+      , jsaddle-warp
+
+  default-language: Haskell2010
+
+  ghc-options:
+    -Wall
+    -fno-warn-unused-do-bind
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+
+  if impl(ghcjs)
+    ghc-options:
+      -dedupe
+    cpp-options:
+      -DGHCJS_BROWSER
+
+  default-extensions:
+    OverloadedStrings
+    RecursiveDo
+    ScopedTypeVariables
+    FlexibleContexts
+    TypeFamilies
+    ConstraintKinds
+
+executable saAdminFE
+  main-is:          AdminFE.hs
+  hs-source-dirs:   src
+
+  build-depends:
+      base
+    , reflex
+    , reflex-dom
+    , reflex-dom-core
+    , text
+    , time
+    , containers
+    , rel8
+    , aeson
+    , hasql
+
+  if !impl(ghcjs)
+    build-depends:
+        jsaddle
+      , jsaddle-warp
+
+  default-language: Haskell2010
+
+  ghc-options:
+    -Wall
+    -fno-warn-unused-do-bind
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+
+  if impl(ghcjs)
+    ghc-options:
+      -dedupe
+    cpp-options:
+      -DGHCJS_BROWSER
+
+  default-extensions:
+    OverloadedStrings
+    RecursiveDo
+    ScopedTypeVariables
+    FlexibleContexts
+    TypeFamilies
+    ConstraintKinds
+
+executable saBackend
+  main-is:          Backend.hs
   hs-source-dirs:   src
 
   build-depends:

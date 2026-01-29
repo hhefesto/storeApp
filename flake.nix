@@ -37,17 +37,29 @@
           };
 
           # # Android configuration
-          # android.storeApp = {
-          #   executableName = "storeApp";
-          #   applicationId = "com.example.rallm";
-          #   displayName = "storeApp";
+          # android.saClientFE = {
+          #   executableName = "saClientFE";
+          #   applicationId = "com.example.rallm.client";
+          #   displayName = "Store Client";
+          # };
+
+          # android.saAdminFE = {
+          #   executableName = "saAdminFE";
+          #   applicationId = "com.example.rallm.admin";
+          #   displayName = "Store Admin";
           # };
 
           # # iOS configuration (for future use)
-          # ios.storeApp = {
-          #   executableName = "storeApp";
-          #   bundleIdentifier = "com.example.rallm";
-          #   bundleName = "storeApp";
+          # ios.saClientFE = {
+          #   executableName = "saClientFE";
+          #   bundleIdentifier = "com.example.rallm.client";
+          #   bundleName = "Store Client";
+          # };
+
+          # ios.saAdminFE = {
+          #   executableName = "saAdminFE";
+          #   bundleIdentifier = "com.example.rallm.admin";
+          #   bundleName = "Store Admin";
           # };
 
           # Additional overrides if needed
@@ -56,8 +68,10 @@
           };
         });
 
-        # Helper to get the correct package output
-        getExe = pkg: "${pkg}/bin/storeApp";
+        # Helper functions to get the correct package outputs
+        getClientExe = pkg: "${pkg}/bin/saClientFE";
+        getAdminExe = pkg: "${pkg}/bin/saAdminFE";
+        getBackendExe = pkg: "${pkg}/bin/saBackend";
 
       in
       {
@@ -70,51 +84,102 @@
 
         # Packages
         packages = rec {
-          # Native executable
-          default = native;
-          native = project.ghc.storeApp;
+          # Native executables
+          default = project.ghc.storeApp;
 
-          # Web build (GHCJS)
-          web = project.ghcjs.storeApp;
+          # Web builds (GHCJS) - only for frontend apps
 
-          # # Android build
-          # android = project.android.storeApp;
+          # # Android builds
+          # androidClient = project.android.saClientFE;
+          # androidAdmin = project.android.saAdminFE;
 
-          # # iOS build
-          # ios = project.ios.storeApp;
+          # # iOS builds
+          # iosClient = project.ios.saClientFE;
+          # iosAdmin = project.ios.saAdminFE;
         };
 
         # Apps for easy running
         apps = {
-          # Run native version
-          native = {
+          # Run client frontend natively
+          client = {
             type = "app";
-            program = getExe self.packages.${system}.native;
+            program = getClientExe self.packages.${system}.default;
           };
 
-          # Serve web version
-          serve-web = {
+          # Run admin frontend natively
+          admin = {
             type = "app";
-            program = reflexPlatform.nixpkgs.writeShellScript "serve-web" ''
-              if [ ! -d "${self.packages.${system}.web}/bin/storeApp.jsexe" ]; then
-                echo "Building web version first..."
-                nix build .#web
+            program = getAdminExe self.packages.${system}.default;
+          };
+
+          # Run backend
+          backend = {
+            type = "app";
+            program = getBackendExe self.packages.${system}.default;
+          };
+
+          # Serve client web version
+          serve-client = {
+            type = "app";
+            program = reflexPlatform.nixpkgs.writeShellScript "serve-client" ''
+              if [ ! -d "${self.packages.${system}.webClient}/bin/saClientFE.jsexe" ]; then
+                echo "Building web client first..."
+                nix build .#webClient
               fi
-              echo "Serving web app at http://localhost:8080"
+              echo "Serving client web app at http://localhost:8080"
               echo "Press Ctrl+C to stop the server"
               ${reflexPlatform.nixpkgs.python3}/bin/python3 -m http.server 8080 \
-                --directory ${self.packages.${system}.web}/bin/storeApp.jsexe
+                --directory ${self.packages.${system}.webClient}/bin/saClientFE.jsexe
             '';
           };
 
-          # Development mode with ghcid
-          dev = {
+          # Serve admin web version
+          serve-admin = {
             type = "app";
-            program = reflexPlatform.nixpkgs.writeShellScript "dev-storeApp" ''
-              echo "Starting storeApp in development mode with auto-reload..."
-              echo "Edit src/Main.hs and see changes instantly!"
+            program = reflexPlatform.nixpkgs.writeShellScript "serve-admin" ''
+              if [ ! -d "${self.packages.${system}.webAdmin}/bin/saAdminFE.jsexe" ]; then
+                echo "Building web admin first..."
+                nix build .#webAdmin
+              fi
+              echo "Serving admin web app at http://localhost:8081"
+              echo "Press Ctrl+C to stop the server"
+              ${reflexPlatform.nixpkgs.python3}/bin/python3 -m http.server 8081 \
+                --directory ${self.packages.${system}.webAdmin}/bin/saAdminFE.jsexe
+            '';
+          };
+
+          # Development mode with ghcid for client
+          dev-client = {
+            type = "app";
+            program = reflexPlatform.nixpkgs.writeShellScript "dev-client" ''
+              echo "Starting Client Frontend in development mode with auto-reload..."
+              echo "Edit src/ClientFE.hs and see changes instantly!"
               exec nix develop -c ghcid \
-                --command "cabal repl exe:storeApp" \
+                --command "cabal repl exe:saClientFE" \
+                --run=":main"
+            '';
+          };
+
+          # Development mode with ghcid for admin
+          dev-admin = {
+            type = "app";
+            program = reflexPlatform.nixpkgs.writeShellScript "dev-admin" ''
+              echo "Starting Admin Frontend in development mode with auto-reload..."
+              echo "Edit src/AdminFE.hs and see changes instantly!"
+              exec nix develop -c ghcid \
+                --command "cabal repl exe:saAdminFE" \
+                --run=":main"
+            '';
+          };
+
+          # Development mode with ghcid for backend
+          dev-backend = {
+            type = "app";
+            program = reflexPlatform.nixpkgs.writeShellScript "dev-backend" ''
+              echo "Starting Backend in development mode with auto-reload..."
+              echo "Edit src/Backend.hs and see changes instantly!"
+              exec nix develop -c ghcid \
+                --command "cabal repl exe:saBackend" \
                 --run=":main"
             '';
           };
