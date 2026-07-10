@@ -1,0 +1,42 @@
+cabal-version:      2.4
+name:               directo-frontend
+version:            0.1.0.0
+synopsis:           Reflex-DOM storefront and admin panel for directo.
+author:             hhefesto
+maintainer:         hhefesto@rdataa.com
+build-type:         Simple
+
+common fe
+    default-language: Haskell2010
+    default-extensions:
+        OverloadedStrings
+        FlexibleContexts
+        RecursiveDo
+        ScopedTypeVariables
+        LambdaCase
+        TupleSections
+    build-depends:
+        base               >= 4.14 && < 5
+      , aeson
+      , bytestring
+      , containers
+      , ghcjs-dom
+      , jsaddle
+      , reflex
+      , reflex-dom
+      , text
+      , time
+      , directo-shared
+    ghc-options: -Wall -O
+
+executable directo-client
+    import:           fe
+    main-is:          Main.hs
+    hs-source-dirs:   client, common
+    other-modules:    Common
+
+executable directo-admin
+    import:           fe
+    main-is:          Main.hs
+    hs-source-dirs:   admin, common
+    other-modules:    Common

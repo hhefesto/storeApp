@@ -1,0 +1,5 @@
+-- Used only when developing the JS-cross frontend with cabal by hand.
+-- The flake uses callCabal2nix on the JS-backend cross package set.
+packages:
+  ./shared
+  ./frontend

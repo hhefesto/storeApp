@@ -1,0 +1,70 @@
+cabal-version:      2.4
+name:               directo-backend
+version:            0.1.0.0
+synopsis:           Servant backend for the directo store (Querétaro).
+author:             hhefesto
+maintainer:         hhefesto@rdataa.com
+build-type:         Simple
+
+library
+    exposed-modules:
+        Api
+        Auth
+        Db
+        MercadoPago
+        OrderRef
+    hs-source-dirs:   src
+    default-language: Haskell2010
+    default-extensions:
+        OverloadedStrings
+        DataKinds
+        TypeOperators
+        DeriveGeneric
+        ScopedTypeVariables
+        LambdaCase
+        TupleSections
+    build-depends:
+        base                >= 4.14 && < 5
+      , aeson
+      , base16-bytestring
+      , bcrypt
+      , bytestring
+      , containers
+      , cryptohash-sha256
+      , http-client
+      , http-client-tls
+      , http-types
+      , postgresql-simple
+      , servant
+      , servant-server
+      , text
+      , time
+      , uuid
+      , wai
+      , wai-extra
+      , warp
+      , directo-shared
+    ghc-options: -Wall
+
+executable directo-backend
+    main-is:          Main.hs
+    hs-source-dirs:   app
+    default-language: Haskell2010
+    default-extensions: OverloadedStrings
+    build-depends:
+        base
+      , directo-backend
+      , directo-shared
+      , text
+      , warp
+    ghc-options: -threaded -rtsopts -with-rtsopts=-N
+
+executable directo-migrate
+    main-is:          Migrate.hs
+    hs-source-dirs:   app
+    default-language: Haskell2010
+    build-depends:
+        base
+      , bytestring
+      , postgresql-simple
+      , postgresql-simple-migration

@@ -1,0 +1,23 @@
+cabal-version:      2.4
+name:               directo-shared
+version:            0.1.0.0
+synopsis:           Wire types shared between directo-frontend and directo-backend
+author:             hhefesto
+maintainer:         hhefesto@rdataa.com
+build-type:         Simple
+
+library
+    exposed-modules:  Directo.Types
+    hs-source-dirs:   src
+    default-language: Haskell2010
+    default-extensions:
+        OverloadedStrings
+        DeriveGeneric
+        DeriveAnyClass
+        LambdaCase
+    build-depends:
+        base    >= 4.14 && < 5
+      , aeson
+      , text
+      , time
+    ghc-options: -Wall
