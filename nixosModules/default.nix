@@ -284,8 +284,12 @@ in {
       services.nginx = {
         enable = true;
         virtualHosts.${cfg.serverName} = {
-          listen = lib.mkIf development [
+          listen = [
             { addr = "0.0.0.0"; port = cfg.ports.nginx; }
+            { addr = "[::]";    port = cfg.ports.nginx; }
+          ] ++ lib.optionals production [
+            { addr = "0.0.0.0"; port = 443; ssl = true; }
+            { addr = "[::]";    port = 443; ssl = true; }
           ];
           root = cfg.packages.staticRoot;
           locations."/" = {
