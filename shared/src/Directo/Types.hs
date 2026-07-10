@@ -29,6 +29,9 @@ module Directo.Types
   , ShipReq(..)
   , UserInfo(..)
   , AuthConfig(..)
+  , ContactReq(..)
+  , ContactMessage(..)
+  , CustomerSummary(..)
   , centsToMxn
   ) where
 
@@ -79,6 +82,7 @@ categoryFromText t =
 data Product = Product
   { productId   :: Int64
   , sku         :: Text
+  , slug        :: Text       -- ^ URL identity, e.g. "bomba-de-desague-whirlpool-vmw"
   , name        :: Text
   , description :: Text
   , category    :: Category
@@ -93,6 +97,7 @@ data Product = Product
 -- | Admin create/update payload ('productId' is taken from the URL).
 data ProductInput = ProductInput
   { piSku         :: Text
+  , piSlug        :: Text
   , piName        :: Text
   , piDescription :: Text
   , piCategory    :: Category
@@ -244,6 +249,37 @@ newtype AuthConfig = AuthConfig
 
 instance ToJSON AuthConfig
 instance FromJSON AuthConfig
+
+-- | A submission of the public Contacto form.
+data ContactReq = ContactReq
+  { crName    :: Text
+  , crEmail   :: Text
+  , crPhone   :: Text
+  , crMessage :: Text
+  } deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+-- | A stored contact message, as listed in the admin inbox.
+data ContactMessage = ContactMessage
+  { cmId        :: Int64
+  , cmName      :: Text
+  , cmEmail     :: Text
+  , cmPhone     :: Text
+  , cmMessage   :: Text
+  , cmCreatedAt :: UTCTime
+  , cmReadAt    :: Maybe UTCTime
+  } deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+-- | One row of the admin Clientes view: a customer aggregated from their
+-- orders (keyed by email; they may or may not have a Google account).
+data CustomerSummary = CustomerSummary
+  { csEmail           :: Text
+  , csName            :: Text
+  , csPhone           :: Text
+  , csHasAccount      :: Bool
+  , csOrderCount      :: Int
+  , csTotalSpentCents :: Int
+  , csLastOrderAt     :: UTCTime
+  } deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
 -- | Render centavos as \"$1,234.50\".
 centsToMxn :: Int -> Text

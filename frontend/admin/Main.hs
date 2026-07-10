@@ -1,4 +1,9 @@
--- | directo — admin panel SPA (productos, pedidos, guía DHL).
+-- | directo — admin panel SPA.
+--
+-- Five tabs: Dashboard (KPIs + queue of in-process orders), Pedidos
+-- (full order management), Productos (catalog CRUD), Clientes
+-- (customers aggregated from orders, with purchase history) and
+-- Mensajes (contact-form inbox).
 module Main where
 
 import           Control.Monad        (forM_, void)
@@ -20,6 +25,7 @@ headW = do
   elAttr "meta" ("charset" =: "utf-8") blank
   elAttr "meta" ("name" =: "viewport"
               <> "content" =: "width=device-width, initial-scale=1") blank
+  elAttr "link" ("rel" =: "stylesheet" <> "href" =: "/static/fonts/fonts.css") blank
   el "style" $ text baseCss
 
 bodyW :: MonadWidget t m => m ()
@@ -54,31 +60,110 @@ loginScreen = elClass "div" "wrap" $ elClass "div" "panel" $ do
 
 -- ── panel ───────────────────────────────────────────────────────────────
 
-data Tab = TabProductos | TabPedidos deriving (Eq, Show)
+data Tab
+  = TabDashboard
+  | TabPedidos
+  | TabProductos
+  | TabClientes
+  | TabMensajes
+  deriving (Eq, Show)
 
 panel :: MonadWidget t m => m ()
 panel = do
   rec
     tabE <- elClass "header" "topbar" $ do
       elClass "div" "brand" $ do
-        text "DIRECTO · Admin"
-        el "small" $ text "Productos, pedidos y guías DHL"
+        text "Directo · Admin"
+        el "small" $ text "Pedidos, productos, clientes y mensajes"
       elClass "div" "spacer" blank
-      (prodBtn, _) <- elAttr' "button" ("class" =: "navbtn") $ text "Productos"
-      (ordBtn, _)  <- elAttr' "button" ("class" =: "navbtn") $ text "Pedidos"
-      (outBtn, _)  <- elAttr' "button" ("class" =: "navbtn") $ text "Salir"
+      es <- mapM (\(label, t) -> do
+              (b, _) <- elAttr' "button" ("class" =: "navbtn") $ text label
+              pure (t <$ domEvent Click b))
+        [ ("Dashboard", TabDashboard)
+        , ("Pedidos",   TabPedidos)
+        , ("Productos", TabProductos)
+        , ("Clientes",  TabClientes)
+        , ("Mensajes",  TabMensajes)
+        ]
+      (outBtn, _) <- elAttr' "button" ("class" =: "navbtn") $ text "Salir"
       logoutE <- performRequestAsync (postEmptyXhr "/api/admin/logout" <$ domEvent Click outBtn)
       void $ widgetHold blank (loginScreen <$ logoutE)
-      pure $ leftmost
-        [ TabProductos <$ domEvent Click prodBtn
-        , TabPedidos   <$ domEvent Click ordBtn
-        ]
-    tabDyn <- holdDyn TabProductos tabE
+      pure (leftmost es)
+    tabDyn <- holdDyn TabDashboard tabE
+  elDynAttr "div" (tabAttrs TabDashboard <$> tabDyn) dashboardTab
+  elDynAttr "div" (tabAttrs TabPedidos   <$> tabDyn) pedidosTab
   elDynAttr "div" (tabAttrs TabProductos <$> tabDyn) productosTab
-  elDynAttr "div" (tabAttrs TabPedidos <$> tabDyn) pedidosTab
+  elDynAttr "div" (tabAttrs TabClientes  <$> tabDyn) clientesTab
+  elDynAttr "div" (tabAttrs TabMensajes  <$> tabDyn) mensajesTab
   where
     tabAttrs me t =
       "class" =: "wrap" <> if t == me then mempty else "style" =: "display:none"
+
+kpi :: MonadWidget t m => Text -> Dynamic t Text -> m ()
+kpi label valDyn = elClass "div" "kpi" $ do
+  elClass "div" "n" $ dynText valDyn
+  elClass "div" "l" $ text label
+
+-- ── dashboard ───────────────────────────────────────────────────────────
+
+-- | KPIs over all orders plus the action queue: everything the store
+-- still owes the customer (not yet shipped, or shipped but not closed).
+dashboardTab :: MonadWidget t m => m ()
+dashboardTab = do
+  pb <- getPostBuild
+  rec
+    let fetchE = leftmost [() <$ pb, () <$ actionDoneE]
+    ordersE <- getAndDecode (("/api/admin/orders" :: Text) <$ fetchE)
+    ordersDyn <- holdDyn [] (fromMaybe [] <$> ordersE)
+
+    elClass "div" "kpis" $ do
+      let count sts = T.pack . show . length . filter ((`elem` sts) . osStatus) <$> ordersDyn
+      kpi "Por enviar (pagados)" (count [Paid])
+      kpi "Pago pendiente" (count [Created, PendingPayment])
+      kpi "En tránsito" (count [Shipped])
+      kpi "Cobrado (MXN)" $
+        ffor ordersDyn $ \os -> centsToMxn $ sum
+          [ osTotalCents o | o <- os, osStatus o `elem` [Paid, Shipped, Completed] ]
+
+    elClass "h2" "h2" $ text "Pedidos en proceso"
+    elClass "p" "muted" $
+      text "Pedidos que aún requieren acción: confirmar pago, generar guía y enviar, o cerrar la entrega."
+
+    let queueDyn = filter ((`elem` [Created, PendingPayment, Paid, Shipped]) . osStatus)
+                     <$> ordersDyn
+    actionDoneE <- ordersBoard queueDyn "Nada pendiente. Todos los pedidos están completados."
+  pure ()
+
+-- | Order table + selectable detail (shared by dashboard and clientes).
+-- Returns an event firing after any successful order mutation.
+ordersBoard :: MonadWidget t m => Dynamic t [OrderSummary] -> Text -> m (Event t ())
+ordersBoard ordersDyn emptyMsg = do
+  rec
+    selectE <- el "table" $ do
+      el "thead" $ el "tr" $
+        forM_ ["Pedido", "Fecha", "Cliente", "Total", "Estado", "Guía DHL", ""]
+          (el "th" . text)
+      rowsEE <- el "tbody" $ dyn $ ffor ordersDyn $ \os ->
+        if null os
+          then do
+            el "tr" $ elAttr "td" ("colspan" =: "7") $
+              elClass "span" "muted" $ text emptyMsg
+            pure never
+          else leftmost <$> mapM orderRow os
+      switchHold never rowsEE
+
+    selDyn <- holdDyn Nothing (Just <$> selectE)
+    let detailFetchE = leftmost
+          [ fmapMaybe id (updated selDyn)
+          , attachWithMaybe (\sel _ -> sel) (current selDyn) actionDoneE
+          ]
+    detailE <- getAndDecode
+      ((\oid -> "/api/admin/orders/" <> T.pack (show oid)) <$> detailFetchE)
+    detailDyn <- holdDyn Nothing detailE
+
+    actionEE <- dyn (orderDetail <$> detailDyn)
+    actionDoneE <- switchHold never actionEE
+  pure actionDoneE
 
 -- ── productos ───────────────────────────────────────────────────────────
 
@@ -111,23 +196,18 @@ productosTab = do
 
     let mutatedE = mutatedE'
   pure ()
-  where
-    kpi label valDyn = elClass "div" "kpi" $ do
-      elClass "div" "n" $ dynText valDyn
-      elClass "div" "l" $ text label
 
 productRow :: MonadWidget t m => Product -> m (Event t Product)
 productRow p = el "tr" $ do
-  el "td" $ text (sku p)
+  elClass "td" "mono" $ text (sku p)
   el "td" $ text (name p)
   el "td" $ text (categoryLabel (category p))
   el "td" $ text (brand p)
-  el "td" $ text (mxn (priceCents p))
-  el "td" $ text (T.pack (show (stock p)))
+  elClass "td" "mono" $ text (mxn (priceCents p))
+  elClass "td" "mono" $ text (T.pack (show (stock p)))
   el "td" $ text (if active p then "Sí" else "No")
   el "td" $ do
-    (btn, _) <- elAttr' "button" ("class" =: "navbtn" <> "style" =: "color:#12365f;border-color:#cdd5df") $
-      text "Editar"
+    (btn, _) <- elAttr' "button" ("class" =: "pill") $ text "Editar"
     pure (p <$ domEvent Click btn)
 
 -- | Create (Nothing) or edit (Just p). Returns an event that fires after a
@@ -137,28 +217,33 @@ productForm mp = do
   elClass "h2" "h2" $ text (maybe "Nuevo producto" (("Editar: " <>) . name) mp)
   let ini f dflt = maybe dflt f mp
   rec
-    (skuD, nameD, brandD) <- elClass "div" "formgrid" $ do
+    (skuD, slugD, nameD, brandD) <- elClass "div" "formgrid" $ do
       s <- field "SKU" (ini sku "")
+      sl <- field "Slug (URL)" (ini slug "")
       n <- field "Nombre" (ini name "")
       b <- field "Marca" (ini brand "")
-      pure (s, n, b)
+      pure (s, sl, n, b)
     (catD, priceD, stockD, weightD) <- elClass "div" "formgrid" $ do
       c <- categoryField (ini category Otros)
       pr <- field "Precio (MXN, ej. 495.00)" (ini (centsToPrice . priceCents) "")
       st <- field "Stock" (ini (T.pack . show . stock) "0")
       w  <- field "Peso (gramos)" (ini (maybe "" (T.pack . show) . weightGrams) "")
       pure (c, pr, st, w)
-    activeD <- elClass "div" "field" $ do
-      el "label" $ text "Activo"
-      cb <- inputElement $ def
-        & inputElementConfig_elementConfig . elementConfig_initialAttributes .~
-            ("type" =: "checkbox")
-        & inputElementConfig_initialChecked .~ ini active True
-      pure (_inputElement_checked cb)
+    (imgD, activeD) <- elClass "div" "formgrid" $ do
+      im <- field "Imagen (URL, ej. /static/products/DIR-0001.jpg)"
+              (ini (fromMaybe "" . imageUrl) "")
+      ac <- elClass "div" "field" $ do
+        el "label" $ text "Activo"
+        cb <- inputElement $ def
+          & inputElementConfig_elementConfig . elementConfig_initialAttributes .~
+              ("type" =: "checkbox")
+          & inputElementConfig_initialChecked .~ ini active True
+        pure (_inputElement_checked cb)
+      pure (im, ac)
 
     let inputDyn = mkInput
-          <$> skuD <*> nameD <*> brandD <*> catD
-          <*> priceD <*> stockD <*> weightD <*> activeD
+          <$> skuD <*> slugD <*> nameD <*> brandD <*> catD
+          <*> priceD <*> stockD <*> weightD <*> imgD <*> activeD
 
     (saveE, deleteE) <- elClass "div" "rowbtns" $ do
       (sv, _) <- elAttr' "button" ("class" =: "cta") $
@@ -207,8 +292,9 @@ productForm mp = do
       if T.all (`elem` ("0123456789" :: String)) s && not (T.null s)
         then Just (read (T.unpack s) :: Int) else Nothing
       where s = T.strip t
-    mkInput s n b c pr st w act = ProductInput
+    mkInput s sl n b c pr st w im act = ProductInput
       { piSku = T.strip s
+      , piSlug = T.strip sl
       , piName = T.strip n
       , piDescription = ""
       , piCategory = c
@@ -216,7 +302,7 @@ productForm mp = do
       , piPriceCents = priceToCents pr
       , piStock = readIntD st
       , piWeightGrams = let g = readIntD w in if T.null (T.strip w) then Nothing else Just g
-      , piImageUrl = Nothing
+      , piImageUrl = let v = T.strip im in if T.null v then Nothing else Just v
       , piActive = act
       }
     field label initial = elClass "div" "field" $ do
@@ -257,44 +343,20 @@ pedidosTab = do
     ordersE <- getAndDecode fetchE
     ordersDyn <- holdDyn [] (fromMaybe [] <$> ordersE)
 
-    selectE <- el "table" $ do
-      el "thead" $ el "tr" $
-        forM_ ["Pedido", "Fecha", "Cliente", "Total", "Estado", "Guía DHL", ""]
-          (el "th" . text)
-      rowsEE <- el "tbody" $ dyn $ ffor ordersDyn $ \os ->
-        if null os
-          then do
-            el "tr" $ elAttr "td" ("colspan" =: "7") $
-              elClass "span" "muted" $ text "Sin pedidos."
-            pure never
-          else leftmost <$> mapM orderRow os
-      switchHold never rowsEE
-
-    selDyn <- holdDyn Nothing (Just <$> selectE)
-    let detailFetchE = leftmost
-          [ fmapMaybe id (updated selDyn)
-          , attachWithMaybe (\sel _ -> sel) (current selDyn) actionDoneE
-          ]
-    detailE <- getAndDecode
-      ((\oid -> "/api/admin/orders/" <> T.pack (show oid)) <$> detailFetchE)
-    detailDyn <- holdDyn Nothing detailE
-
-    actionEE <- dyn (orderDetail <$> detailDyn)
-    actionDoneE <- switchHold never actionEE
+    actionDoneE <- ordersBoard ordersDyn "Sin pedidos."
   pure ()
 
 orderRow :: MonadWidget t m => OrderSummary -> m (Event t Int64)
 orderRow o = el "tr" $ do
-  el "td" $ el "strong" $ text (osRef o)
+  elClass "td" "mono" $ el "strong" $ text (osRef o)
   el "td" $ text (T.take 10 (T.pack (show (osCreatedAt o))))
   el "td" $ text (osCustomer o)
-  el "td" $ text (mxn (osTotalCents o))
+  elClass "td" "mono" $ text (mxn (osTotalCents o))
   el "td" $ elClass "span" ("badge " <> orderStatusToText (osStatus o)) $
     text (orderStatusLabel (osStatus o))
-  el "td" $ text (fromMaybe "—" (osWaybill o))
+  elClass "td" "mono" $ text (fromMaybe "—" (osWaybill o))
   el "td" $ do
-    (btn, _) <- elAttr' "button" ("class" =: "navbtn" <> "style" =: "color:#12365f;border-color:#cdd5df") $
-      text "Ver"
+    (btn, _) <- elAttr' "button" ("class" =: "pill") $ text "Ver"
     pure (osId o <$ domEvent Click btn)
 
 -- | Detail panel with state-machine actions and the DHL sheet. Returns an
@@ -328,12 +390,14 @@ orderDetail (Just d) = elClass "div" "panel" $ do
     el "thead" $ el "tr" $
       forM_ ["SKU", "Producto", "Cantidad", "Precio unitario", "Importe"] (el "th" . text)
     el "tbody" $ forM_ (odLines d) $ \l -> el "tr" $ do
-      el "td" $ text (olProductSku l)
+      elClass "td" "mono" $ text (olProductSku l)
       el "td" $ text (olProductName l)
-      el "td" $ text (T.pack (show (olQuantity l)))
-      el "td" $ text (mxn (olUnitPriceCents l))
-      el "td" $ text (mxn (olUnitPriceCents l * olQuantity l))
-  elClass "div" "total" $ text ("Total: " <> mxn (osTotalCents s))
+      elClass "td" "mono" $ text (T.pack (show (olQuantity l)))
+      elClass "td" "mono" $ text (mxn (olUnitPriceCents l))
+      elClass "td" "mono" $ text (mxn (olUnitPriceCents l * olQuantity l))
+  elClass "div" "total" $ do
+    text "Total: "
+    el "b" $ text (mxn (osTotalCents s))
 
   rec
     waybillDyn <- if st == Paid
@@ -431,3 +495,112 @@ guiaText g = T.unlines $
   ]
   where
     kg grams = T.pack (show (fromIntegral grams / 1000 :: Double)) <> " kg"
+
+-- ── clientes ────────────────────────────────────────────────────────────
+
+clientesTab :: MonadWidget t m => m ()
+clientesTab = do
+  pb <- getPostBuild
+  customersE <- getAndDecode (("/api/admin/customers" :: Text) <$ pb)
+  customersDyn <- holdDyn [] (fromMaybe [] <$> customersE)
+
+  elClass "div" "kpis" $ do
+    kpi "Clientes" (T.pack . show . length <$> customersDyn)
+    kpi "Con cuenta Google" (T.pack . show . length . filter csHasAccount <$> customersDyn)
+
+  rec
+    selectE <- el "table" $ do
+      el "thead" $ el "tr" $
+        forM_ ["Cliente", "Email", "Teléfono", "Pedidos", "Total cobrado", "Último pedido", "", ""]
+          (el "th" . text)
+      rowsEE <- el "tbody" $ dyn $ ffor customersDyn $ \cs ->
+        if null cs
+          then do
+            el "tr" $ elAttr "td" ("colspan" =: "8") $
+              elClass "span" "muted" $ text "Aún no hay clientes: aparecerán con su primer pedido."
+            pure never
+          else leftmost <$> mapM customerRow cs
+      switchHold never rowsEE
+
+    selDyn <- holdDyn Nothing (Just <$> selectE)
+
+    void $ dyn $ ffor selDyn $ \case
+      Nothing -> elClass "p" "muted" $
+        text "Selecciona un cliente para ver su historial de compras."
+      Just c -> do
+        elClass "h2" "h2" $ text ("Historial de " <> csName c <> " (" <> csEmail c <> ")")
+        pb2 <- getPostBuild
+        histE <- getAndDecode
+          (("/api/admin/customers/" <> csEmail c <> "/orders") <$ pb2)
+        histDyn <- holdDyn [] (fromMaybe [] <$> histE)
+        void (ordersBoard histDyn "Sin pedidos registrados.")
+  pure ()
+
+customerRow :: MonadWidget t m => CustomerSummary -> m (Event t CustomerSummary)
+customerRow c = el "tr" $ do
+  el "td" $ el "strong" $ text (csName c)
+  el "td" $ text (csEmail c)
+  elClass "td" "mono" $ text (if T.null (csPhone c) then "—" else csPhone c)
+  elClass "td" "mono" $ text (T.pack (show (csOrderCount c)))
+  elClass "td" "mono" $ text (mxn (csTotalSpentCents c))
+  el "td" $ text (T.take 10 (T.pack (show (csLastOrderAt c))))
+  el "td" $
+    if csHasAccount c
+      then elClass "span" "badge paid" $ text "Cuenta"
+      else text ""
+  el "td" $ do
+    (btn, _) <- elAttr' "button" ("class" =: "pill") $ text "Historial"
+    pure (c <$ domEvent Click btn)
+
+-- ── mensajes ────────────────────────────────────────────────────────────
+
+mensajesTab :: MonadWidget t m => m ()
+mensajesTab = do
+  pb <- getPostBuild
+  rec
+    let fetchE = leftmost [() <$ pb, () <$ readDoneE]
+    msgsE <- getAndDecode (("/api/admin/messages" :: Text) <$ fetchE)
+    msgsDyn <- holdDyn [] (fromMaybe [] <$> msgsE)
+
+    elClass "div" "kpis" $ do
+      kpi "Mensajes" (T.pack . show . length <$> msgsDyn)
+      kpi "Sin leer" (T.pack . show . length . filter (isNothing' . cmReadAt) <$> msgsDyn)
+
+    elClass "h2" "h2" $ text "Mensajes del formulario de contacto"
+    readE <- el "table" $ do
+      el "thead" $ el "tr" $
+        forM_ ["Fecha", "Nombre", "Contacto", "Mensaje", "Estado", ""] (el "th" . text)
+      rowsEE <- el "tbody" $ dyn $ ffor msgsDyn $ \ms ->
+        if null ms
+          then do
+            el "tr" $ elAttr "td" ("colspan" =: "6") $
+              elClass "span" "muted" $ text "Sin mensajes todavía."
+            pure never
+          else leftmost <$> mapM messageRow ms
+      switchHold never rowsEE
+
+    readRespE <- performRequestAsync $
+      (\mid -> postEmptyXhr ("/api/admin/messages/" <> T.pack (show mid) <> "/read")) <$> readE
+    let readDoneE = () <$ readRespE
+  pure ()
+  where
+    isNothing' Nothing = True
+    isNothing' _       = False
+
+messageRow :: MonadWidget t m => ContactMessage -> m (Event t Int64)
+messageRow m = el "tr" $ do
+  el "td" $ text (T.take 16 (T.pack (show (cmCreatedAt m))))
+  el "td" $ el "strong" $ text (cmName m)
+  el "td" $ do
+    text (cmEmail m)
+    el "br" blank
+    elClass "span" "mono" $ text (cmPhone m)
+  el "td" $ text (cmMessage m)
+  el "td" $ case cmReadAt m of
+    Nothing -> elClass "span" "badge pending_payment" $ text "Nuevo"
+    Just _  -> elClass "span" "badge completed" $ text "Leído"
+  el "td" $ case cmReadAt m of
+    Nothing -> do
+      (btn, _) <- elAttr' "button" ("class" =: "pill") $ text "Marcar leído"
+      pure (cmId m <$ domEvent Click btn)
+    Just _  -> pure never

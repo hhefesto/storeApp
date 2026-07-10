@@ -26,6 +26,11 @@ module Db
   , deleteUserSession
   , attachOrderUser
   , listOrdersForUser
+  , insertContactMessage
+  , listContactMessages
+  , markMessageRead
+  , listCustomers
+  , listOrdersForEmail
   ) where
 
 import           Control.Exception          (Exception, throwIO)
@@ -55,12 +60,13 @@ initDb = do
 -- ── products ────────────────────────────────────────────────────────────
 
 type ProductRow =
-  (Int64, Text, Text, Text, Text, Text, Int, Int, Maybe Int, Maybe Text, Bool)
+  (Int64, Text, Text, Text, Text, Text, Text, Int, Int, Maybe Int, Maybe Text, Bool)
 
 rowToProduct :: ProductRow -> Product
-rowToProduct (pid, psku, pname, pdesc, pcat, pbrand, pprice, pstock, pweight, pimg, pactive) =
+rowToProduct (pid, psku, pslug, pname, pdesc, pcat, pbrand, pprice, pstock, pweight, pimg, pactive) =
   Product { productId   = pid
           , sku         = psku
+          , slug        = pslug
           , name        = pname
           , description = pdesc
           , category    = fromMaybe Otros (categoryFromText pcat)
@@ -74,7 +80,7 @@ rowToProduct (pid, psku, pname, pdesc, pcat, pbrand, pprice, pstock, pweight, pi
 
 productColumns :: Query
 productColumns =
-  "id, sku, name, description, category, brand, price_cents, stock, weight_grams, image_url, active"
+  "id, sku, slug, name, description, category, brand, price_cents, stock, weight_grams, image_url, active"
 
 listProducts :: Connection -> IO [Product]
 listProducts conn = map rowToProduct <$> query_ conn
@@ -87,19 +93,19 @@ listAllProducts conn = map rowToProduct <$> query_ conn
 insertProduct :: Connection -> ProductInput -> IO Product
 insertProduct conn p = do
   [row] <- query conn
-    ("INSERT INTO products (sku, name, description, category, brand, price_cents, stock, weight_grams, image_url, active) \
-     \VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING " <> productColumns)
-    ( piSku p, piName p, piDescription p, T.pack (show (piCategory p)), piBrand p
+    ("INSERT INTO products (sku, slug, name, description, category, brand, price_cents, stock, weight_grams, image_url, active) \
+     \VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING " <> productColumns)
+    ( piSku p, piSlug p, piName p, piDescription p, T.pack (show (piCategory p)), piBrand p
     , piPriceCents p, piStock p, piWeightGrams p, piImageUrl p, piActive p )
   pure (rowToProduct row)
 
 updateProduct :: Connection -> Int64 -> ProductInput -> IO (Maybe Product)
 updateProduct conn pid p = do
   rows <- query conn
-    ("UPDATE products SET sku=?, name=?, description=?, category=?, brand=?, price_cents=?, \
+    ("UPDATE products SET sku=?, slug=?, name=?, description=?, category=?, brand=?, price_cents=?, \
      \stock=?, weight_grams=?, image_url=?, active=?, updated_at=NOW() \
      \WHERE id=? RETURNING " <> productColumns)
-    ( piSku p, piName p, piDescription p, T.pack (show (piCategory p)), piBrand p
+    ( piSku p, piSlug p, piName p, piDescription p, T.pack (show (piCategory p)), piBrand p
     , piPriceCents p, piStock p, piWeightGrams p, piImageUrl p, piActive p, pid )
   pure (rowToProduct <$> listToMaybe rows)
 
@@ -365,3 +371,45 @@ listOrdersForUser :: Connection -> Int64 -> IO [OrderSummary]
 listOrdersForUser conn uid = map rowToSummary <$> query conn
   ("SELECT " <> summaryColumns <> " FROM orders WHERE user_id = ? ORDER BY created_at DESC")
   (Only uid)
+
+-- ── contact messages ────────────────────────────────────────────────────
+
+insertContactMessage :: Connection -> ContactReq -> IO ()
+insertContactMessage conn cr = void $ execute conn
+  "INSERT INTO contact_messages (name, email, phone, message) VALUES (?,?,?,?)"
+  (crName cr, crEmail cr, crPhone cr, crMessage cr)
+
+listContactMessages :: Connection -> IO [ContactMessage]
+listContactMessages conn = do
+  rows <- query_ conn
+    "SELECT id, name, email, phone, message, created_at, read_at \
+    \FROM contact_messages ORDER BY created_at DESC LIMIT 500"
+  pure [ ContactMessage i n e p m c r | (i, n, e, p, m, c, r) <- rows ]
+
+markMessageRead :: Connection -> Int64 -> IO ()
+markMessageRead conn mid = void $ execute conn
+  "UPDATE contact_messages SET read_at = NOW() WHERE id = ? AND read_at IS NULL"
+  (Only mid)
+
+-- ── customers (admin view) ──────────────────────────────────────────────
+
+-- | Customers aggregated from their orders, keyed by email. Cancelled
+-- orders count toward history but not toward money spent.
+listCustomers :: Connection -> IO [CustomerSummary]
+listCustomers conn = do
+  rows <- query_ conn
+    "SELECT o.customer_email, \
+    \       (array_agg(o.customer_name ORDER BY o.created_at DESC))[1], \
+    \       (array_agg(o.customer_phone ORDER BY o.created_at DESC))[1], \
+    \       bool_or(o.user_id IS NOT NULL), \
+    \       count(*)::int, \
+    \       coalesce(sum(o.total_cents) FILTER (WHERE o.status IN ('paid','shipped','completed')), 0)::int, \
+    \       max(o.created_at) \
+    \FROM orders o GROUP BY o.customer_email ORDER BY max(o.created_at) DESC"
+  pure [ CustomerSummary email uname phone hasAcct cnt spent lastAt
+       | (email, uname, phone, hasAcct, cnt, spent, lastAt) <- rows ]
+
+listOrdersForEmail :: Connection -> Text -> IO [OrderSummary]
+listOrdersForEmail conn email = map rowToSummary <$> query conn
+  ("SELECT " <> summaryColumns <> " FROM orders WHERE customer_email = ? ORDER BY created_at DESC")
+  (Only email)

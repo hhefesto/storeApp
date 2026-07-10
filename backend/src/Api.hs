@@ -54,6 +54,7 @@ type API
   :<|> "api" :> "logout" :> CookieHeader :> Post '[JSON] (SetCookie NoContent)
   :<|> "api" :> "my-orders" :> CookieHeader :> Get '[JSON] [OrderSummary]
   :<|> "api" :> "orders"   :> Capture "ref" Text :> "status" :> Get '[JSON] OrderStatusResp
+  :<|> "api" :> "contact"  :> ReqBody '[JSON] ContactReq :> Post '[JSON] NoContent
   :<|> "api" :> "webhooks" :> "mercadopago"
          :> Header "x-signature" Text :> Header "x-request-id" Text
          :> ReqBody '[JSON] Value :> Post '[JSON] NoContent
@@ -71,6 +72,10 @@ type API
   :<|> "api" :> "admin" :> "orders" :> Capture "id" Int64 :> "ship" :> CookieHeader :> ReqBody '[JSON] ShipReq :> Post '[JSON] NoContent
   :<|> "api" :> "admin" :> "orders" :> Capture "id" Int64 :> "complete" :> CookieHeader :> Post '[JSON] NoContent
   :<|> "api" :> "admin" :> "orders" :> Capture "id" Int64 :> "cancel"   :> CookieHeader :> Post '[JSON] NoContent
+  :<|> "api" :> "admin" :> "customers" :> CookieHeader :> Get '[JSON] [CustomerSummary]
+  :<|> "api" :> "admin" :> "customers" :> Capture "email" Text :> "orders" :> CookieHeader :> Get '[JSON] [OrderSummary]
+  :<|> "api" :> "admin" :> "messages" :> CookieHeader :> Get '[JSON] [ContactMessage]
+  :<|> "api" :> "admin" :> "messages" :> Capture "id" Int64 :> "read" :> CookieHeader :> Post '[JSON] NoContent
 
 api :: Proxy API
 api = Proxy
@@ -93,6 +98,7 @@ server env =
   :<|> userLogoutH
   :<|> myOrdersH
   :<|> orderStatusH
+  :<|> contactH
   :<|> webhookH
   :<|> loginH
   :<|> logoutH
@@ -108,6 +114,10 @@ server env =
   :<|> adminShipH
   :<|> adminCompleteH
   :<|> adminCancelH
+  :<|> adminCustomersH
+  :<|> adminCustomerOrdersH
+  :<|> adminMessagesH
+  :<|> adminMessageReadH
   where
     healthH :: Handler Value
     healthH = pure (object ["status" .= ("ok" :: Text)])
@@ -221,6 +231,14 @@ server env =
             else pure st
           pure (OrderStatusResp ref st')
 
+    contactH :: ContactReq -> Handler NoContent
+    contactH cr = do
+      let bad = T.null . T.strip
+      when (bad (crName cr) || bad (crEmail cr) || bad (crMessage cr)) $
+        throwError err400 { errBody = "nombre, email y mensaje son obligatorios" }
+      withDb env (`Db.insertContactMessage` cr)
+      pure NoContent
+
     webhookH :: Maybe Text -> Maybe Text -> Value -> Handler NoContent
     webhookH mSig mReqId payload = do
       let mDataId = case payload of
@@ -322,6 +340,21 @@ server env =
 
     adminCancelH oid mCookie =
       adminTransition oid mCookie Cancelled (Just "cancelado por administrador")
+
+    adminCustomersH mCookie =
+      requireAdmin env mCookie >> withDb env Db.listCustomers
+
+    adminCustomerOrdersH email mCookie = do
+      requireAdmin env mCookie
+      withDb env $ \conn -> Db.listOrdersForEmail conn email
+
+    adminMessagesH mCookie =
+      requireAdmin env mCookie >> withDb env Db.listContactMessages
+
+    adminMessageReadH mid mCookie = do
+      requireAdmin env mCookie
+      withDb env $ \conn -> Db.markMessageRead conn mid
+      pure NoContent
 
     adminTransition oid mCookie to note = do
       requireAdmin env mCookie
