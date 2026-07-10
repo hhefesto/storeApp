@@ -29,6 +29,7 @@ module Directo.Types
   , ShipReq(..)
   , UserInfo(..)
   , AuthConfig(..)
+  , PaymentConfig(..)
   , ContactReq(..)
   , ContactMessage(..)
   , CustomerSummary(..)
@@ -125,11 +126,12 @@ data ShippingAddress = ShippingAddress
   } deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
 data CheckoutReq = CheckoutReq
-  { customerName  :: Text
-  , customerEmail :: Text
-  , customerPhone :: Text
-  , address       :: ShippingAddress
-  , items         :: [CartItem]
+  { customerName    :: Text
+  , customerEmail   :: Text
+  , customerPhone   :: Text
+  , address         :: ShippingAddress
+  , items           :: [CartItem]
+  , paymentProvider :: Maybe Text  -- ^ "mercadopago" | "stripe"; Nothing = default
   } deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
 data CheckoutResp = CheckoutResp
@@ -249,6 +251,14 @@ newtype AuthConfig = AuthConfig
 
 instance ToJSON AuthConfig
 instance FromJSON AuthConfig
+
+-- | Which payment providers the backend has credentials for.
+newtype PaymentConfig = PaymentConfig
+  { pcProviders :: [Text]   -- ^ e.g. ["mercadopago", "stripe"]
+  } deriving (Show, Eq, Generic)
+
+instance ToJSON PaymentConfig
+instance FromJSON PaymentConfig
 
 -- | A submission of the public Contacto form.
 data ContactReq = ContactReq

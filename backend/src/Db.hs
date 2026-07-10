@@ -12,6 +12,9 @@ module Db
   , listOrders
   , getOrderDetail
   , setPreference
+  , setStripeSession
+  , paymentInfo
+  , getOrderIdByStripeSession
   , recordPayment
   , transition
   , setWaybill
@@ -217,7 +220,27 @@ getOrderDetail conn oid = do
 
 setPreference :: Connection -> Int64 -> Text -> IO ()
 setPreference conn oid prefId = void $ execute conn
-  "UPDATE orders SET mp_preference_id = ?, updated_at = NOW() WHERE id = ?" (prefId, oid)
+  "UPDATE orders SET mp_preference_id = ?, payment_provider = 'mercadopago', updated_at = NOW() WHERE id = ?"
+  (prefId, oid)
+
+setStripeSession :: Connection -> Int64 -> Text -> IO ()
+setStripeSession conn oid sessionId = void $ execute conn
+  "UPDATE orders SET stripe_session_id = ?, payment_provider = 'stripe', updated_at = NOW() WHERE id = ?"
+  (sessionId, oid)
+
+-- | Which provider (and provider-side id) an order is being paid with.
+paymentInfo :: Connection -> Int64 -> IO (Maybe (Maybe Text, Maybe Text))
+paymentInfo conn oid = do
+  rows <- query conn
+    "SELECT payment_provider, stripe_session_id FROM orders WHERE id = ?" (Only oid)
+  pure (listToMaybe rows)
+
+-- | Resolve a Stripe Checkout Session back to our order.
+getOrderIdByStripeSession :: Connection -> Text -> IO (Maybe Int64)
+getOrderIdByStripeSession conn sessionId = do
+  rows <- query conn
+    "SELECT id FROM orders WHERE stripe_session_id = ?" (Only sessionId)
+  pure $ listToMaybe [ oid | Only oid <- rows ]
 
 recordPayment :: Connection -> Int64 -> Text -> Text -> IO ()
 recordPayment conn oid paymentId mpStatus = void $ execute conn

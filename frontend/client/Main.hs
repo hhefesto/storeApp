@@ -193,6 +193,8 @@ bodyW = do
   meRespE <- performRequestAsync (getJson "/api/me" <$ pb)
   authCfgE <- getAndDecode (("/api/auth/config" :: Text) <$ pb)
   providersDyn <- holdDyn [] (maybe [] acProviders <$> authCfgE)
+  payCfgE <- getAndDecode (("/api/payment-config" :: Text) <$ pb)
+  payProvidersDyn <- holdDyn [] (maybe [] pcProviders <$> payCfgE)
 
   rec
     userDyn <- holdDyn Nothing $ leftmost
@@ -219,7 +221,7 @@ bodyW = do
     (navPrdE, opsPrdE)          <- productoShell viewDyn productsDyn
     navCtoE                     <- viewShell1 viewDyn (== VContacto) contacto
     (navCarE, opsCarE)          <- viewShell viewDyn (== VCarrito) (carrito productsDyn cartDyn)
-    (navChkE, opsChkE, confRefE) <- checkoutShell viewDyn productsDyn cartDyn userDyn
+    (navChkE, opsChkE, confRefE) <- checkoutShell viewDyn productsDyn cartDyn userDyn payProvidersDyn
     confRefDyn <- holdDyn "" confRefE
     navConfE <- viewShell1 viewDyn (== VConfirmacion) (confirmacion confRefDyn)
     (navCtaE, loggedOutE) <- cuentaView viewDyn userDyn providersDyn
@@ -354,15 +356,21 @@ inicio productsDyn = do
       pure (VTienda Nothing <$ domEvent Click btn)
     pure (leftmost [verE, másE])
 
-  -- payment methods
+  -- payment methods: what the online checkout takes vs the counter
   elClass "section" "seccion pagos" $ do
     elClass "p" "eyebrow" $ text "Formas de pago"
     elClass "h2" "display seccion-titulo" $ text "Aceptamos"
+    elClass "p" "pagos-grupo" $ text "Paga en línea"
     elClass "div" "pagos-lista" $
-      forM_ [ "Efectivo", "Visa", "Mastercard", "AMEX", "Carnet"
-            , "Tarjeta de Crédito", "Tarjeta de Débito", "Transferencia", "SPEI"
-            , "Depósito", "Cheque", "Vales", "PayPal", "Mercado Pago", "CoDi"
-            , "Oxxo", "Seven Eleven", "Apple Pay", "Samsung Pay", "Claro Pay", "Baz" ] $ \p ->
+      forM_ [ "Visa", "Mastercard", "AMEX", "Tarjeta de Débito"
+            , "Apple Pay", "Google Pay", "Oxxo", "SPEI"
+            , "Mercado Pago", "Meses sin intereses" ] $ \p ->
+        elClass "span" "pago-chip" $ text p
+    elClass "p" "pagos-grupo" $ text "En el mostrador"
+    elClass "div" "pagos-lista" $
+      forM_ [ "Efectivo", "Tarjeta de Crédito", "Tarjeta de Débito", "Carnet"
+            , "Transferencia", "Depósito", "Cheque", "Vales", "PayPal", "CoDi"
+            , "Seven Eleven", "Samsung Pay", "Claro Pay", "Baz" ] $ \p ->
         elClass "span" "pago-chip" $ text p
 
   pure (leftmost [heroE, espE, destE])
@@ -686,9 +694,9 @@ cartRow (p, q) = el "tr" $ do
 
 checkoutShell :: MonadWidget t m
               => Dynamic t View -> Dynamic t [Product] -> Dynamic t Cart
-              -> Dynamic t (Maybe UserInfo)
+              -> Dynamic t (Maybe UserInfo) -> Dynamic t [Text]
               -> m (Event t View, Event t [CartOp], Event t Text)
-checkoutShell viewDyn _productsDyn cartDyn userDyn =
+checkoutShell viewDyn _productsDyn cartDyn userDyn payProvidersDyn =
   elDynAttr "div" (shellAttrs (== VCheckout) <$> viewDyn) $ elClass "section" "seccion" $ do
     elClass "p" "eyebrow" $ text "Último paso"
     elClass "h1" "display seccion-titulo" $ text "Datos de envío"
@@ -715,12 +723,29 @@ checkoutShell viewDyn _productsDyn cartDyn userDyn =
         es <- field "Estado *" "text"
         re <- field "Referencias (opcional)" "text"
         pure (ci, es, re)
+      -- payment-method chooser (only when more than one provider)
+      chosenDyn <- do
+        chosenEE <- dyn $ ffor payProvidersDyn $ \ps ->
+          if length ps < 2
+            then pure never
+            else do
+              elClass "div" "field" $ el "label" $ text "Método de pago"
+              elClass "div" "metodos" $ mdo
+                es <- mapM (metodoCard selD) ps
+                selD <- holdDyn (headDef "mercadopago" ps) (leftmost es)
+                pure (updated selD)
+        chosenE <- switchHold never chosenEE
+        -- default: first configured provider (or MP) until the user picks
+        defaultDyn <- holdDyn Nothing (Just . headDef "mercadopago" <$> updated payProvidersDyn)
+        picked <- holdDyn Nothing (Just <$> chosenE)
+        pure $ ffor ((,) <$> picked <*> defaultDyn) $ \(p, d) -> maybe d Just p
+
       let addrDyn = ShippingAddress
             <$> calleD <*> numD <*> colD <*> cpD <*> ciuD <*> estD
             <*> (nonEmpty <$> refD)
           itemsDyn = map (uncurry CartItem) . M.toList <$> cartDyn
           reqD = CheckoutReq
-            <$> nameD <*> emailD <*> phoneD <*> addrDyn <*> itemsDyn
+            <$> nameD <*> emailD <*> phoneD <*> addrDyn <*> itemsDyn <*> chosenDyn
           validD = all (not . T.null . T.strip)
             <$> sequence [nameD, emailD, phoneD, calleD, numD, colD, cpD, ciuD, estD]
       pure (reqD, (&&) <$> validD <*> (not . M.null <$> cartDyn))
@@ -755,6 +780,19 @@ checkoutShell viewDyn _productsDyn cartDyn userDyn =
     pure (navE, opsE, devDoneE)
   where
     nonEmpty t = let s = T.strip t in if T.null s then Nothing else Just s
+    headDef d xs = case xs of { (x:_) -> x; [] -> d }
+    metodoCard selD p = do
+      let (titulo, sub) = case p of
+            "stripe"      -> ("Tarjeta, Apple Pay o Google Pay", "Procesado por Stripe")
+            "mercadopago" -> ("Mercado Pago", "Tarjetas, OXXO, SPEI y meses sin intereses")
+            other         -> (other, "")
+          attrs = ffor selD $ \sel ->
+            "type" =: "button" <>
+            "class" =: (if sel == p then "metodo on" else "metodo")
+      (e, _) <- elDynAttr' "button" attrs $ do
+        elClass "span" "metodo-titulo" $ text titulo
+        elClass "span" "metodo-sub" $ text sub
+      pure (p <$ domEvent Click e)
     field label typ = fieldSet label typ never
     fieldSet label typ setE = elClass "div" "field" $ do
       el "label" $ text label
@@ -961,7 +999,15 @@ clientCss = T.unlines
   , ".especialidad:hover{border-color:var(--marca);}"
   , ".esp-marca{color:var(--marca);font-size:0.7rem;}"
   , ".centrado{text-align:center;margin-top:1.4rem;}"
+  , ".pagos-grupo{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:0.72rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--tinta-suave);margin:1rem 0 0.5rem;}"
   , ".pagos-lista{display:flex;flex-wrap:wrap;gap:0.45rem;}"
+  -- payment-method chooser (checkout)
+  , ".metodos{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0.7rem;margin-bottom:1rem;}"
+  , ".metodo{display:flex;flex-direction:column;gap:0.2rem;text-align:left;background:var(--blanco);border:2px solid var(--linea);border-radius:var(--radio);padding:0.85rem 1rem;cursor:pointer;}"
+  , ".metodo:hover{border-color:var(--marca);}"
+  , ".metodo.on{border-color:var(--marca);background:var(--marca-tinte);}"
+  , ".metodo-titulo{font-weight:600;color:var(--tinta);}"
+  , ".metodo-sub{font-size:0.8rem;color:var(--tinta-suave);}"
   , ".pago-chip{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:0.74rem;letter-spacing:0.04em;border:1px solid var(--linea);background:var(--blanco);border-radius:6px;padding:0.25rem 0.6rem;color:var(--tinta-suave);}"
   , ".prosa p{margin-bottom:0.9rem;max-width:68ch;}"
   -- product page

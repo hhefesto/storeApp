@@ -201,7 +201,7 @@ in {
       backendEnvFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
-        description = "Override for the backend EnvironmentFile (DATABASE_URL, MERCADOPAGO_ACCESS_TOKEN, MERCADOPAGO_WEBHOOK_SECRET).";
+        description = "Override for the backend EnvironmentFile (DATABASE_URL, MERCADOPAGO_ACCESS_TOKEN, MERCADOPAGO_WEBHOOK_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DIRECTO_GOOGLE_CLIENT_ID/SECRET).";
       };
 
       adminPasswordHashFile = lib.mkOption {

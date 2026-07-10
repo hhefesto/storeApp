@@ -8,10 +8,12 @@ import           Control.Concurrent.MVar    (MVar, withMVar)
 import           Control.Exception          (try)
 import           Control.Monad              (unless, void, when)
 import           Control.Monad.IO.Class     (liftIO)
-import           Data.Aeson                 (Value (..), object, (.=))
+import           Data.Aeson                 (Value (..), decodeStrict, object,
+                                             (.=))
 import qualified Data.Aeson.KeyMap          as KM
 import           Data.ByteString            (ByteString)
 import           Data.Int                   (Int64)
+import           Data.Maybe                 (fromMaybe, isJust)
 import           Data.Text                  (Text)
 import qualified Data.Text                  as T
 import           Database.PostgreSQL.Simple (Connection)
@@ -23,10 +25,12 @@ import qualified Auth
 import qualified Db
 import qualified MercadoPago                as MP
 import qualified OAuth
+import qualified Stripe
 
 data AppEnv = AppEnv
   { envConn         :: MVar Connection
   , envMp           :: MP.MpConfig
+  , envStripe       :: Stripe.StripeConfig
   , envOAuth        :: OAuth.OAuthEnv
   , envAdminHash    :: ByteString
   , envCookieSecure :: Bool
@@ -55,6 +59,10 @@ type API
   :<|> "api" :> "my-orders" :> CookieHeader :> Get '[JSON] [OrderSummary]
   :<|> "api" :> "orders"   :> Capture "ref" Text :> "status" :> Get '[JSON] OrderStatusResp
   :<|> "api" :> "contact"  :> ReqBody '[JSON] ContactReq :> Post '[JSON] NoContent
+  :<|> "api" :> "payment-config" :> Get '[JSON] PaymentConfig
+  :<|> "api" :> "webhooks" :> "stripe"
+         :> Header "Stripe-Signature" Text
+         :> ReqBody '[OctetStream] ByteString :> Post '[JSON] NoContent
   :<|> "api" :> "webhooks" :> "mercadopago"
          :> Header "x-signature" Text :> Header "x-request-id" Text
          :> ReqBody '[JSON] Value :> Post '[JSON] NoContent
@@ -99,6 +107,8 @@ server env =
   :<|> myOrdersH
   :<|> orderStatusH
   :<|> contactH
+  :<|> paymentConfigH
+  :<|> stripeWebhookH
   :<|> webhookH
   :<|> loginH
   :<|> logoutH
@@ -143,14 +153,25 @@ server env =
             Nothing       -> pure ()
           mDetail <- withDb env (`Db.getOrderDetail` oid)
           let orderLines = maybe [] odLines mDetail
-          mPref <- liftIO (MP.createPreference (envMp env) ref orderLines)
-          case mPref of
-            Nothing -> pure (CheckoutResp ref Nothing)
-            Just (prefId, initPointUrl) -> do
-              void . withDb env $ \conn -> do
-                Db.setPreference conn oid prefId
-                Db.transition conn oid PendingPayment (Just "preferencia de pago creada")
-              pure (CheckoutResp ref (Just initPointUrl))
+          case paymentProvider req of
+            Just "stripe" | Stripe.enabled (envStripe env) -> do
+              mSession <- liftIO (Stripe.createCheckoutSession (envStripe env) ref orderLines)
+              case mSession of
+                Nothing -> pure (CheckoutResp ref Nothing)
+                Just (sessionId, url) -> do
+                  void . withDb env $ \conn -> do
+                    Db.setStripeSession conn oid sessionId
+                    Db.transition conn oid PendingPayment (Just "sesión de pago Stripe creada")
+                  pure (CheckoutResp ref (Just url))
+            _ -> do
+              mPref <- liftIO (MP.createPreference (envMp env) ref orderLines)
+              case mPref of
+                Nothing -> pure (CheckoutResp ref Nothing)
+                Just (prefId, initPointUrl) -> do
+                  void . withDb env $ \conn -> do
+                    Db.setPreference conn oid prefId
+                    Db.transition conn oid PendingPayment (Just "preferencia de pago creada")
+                  pure (CheckoutResp ref (Just initPointUrl))
 
     authConfigH :: Handler AuthConfig
     authConfigH = pure (AuthConfig (OAuth.providerNames (envOAuth env)))
@@ -221,13 +242,24 @@ server env =
                 Just oid -> do
                   due <- withDb env $ \conn -> Db.mpCheckDue conn oid 30
                   if not due then pure st else do
-                    mPayment <- liftIO (MP.searchPaymentByRef (envMp env) ref)
-                    case mPayment of
-                      Nothing -> pure st
-                      Just (pid, mpStatus) -> do
-                        applyPaymentStatus env oid pid mpStatus
-                        newStatus <- withDb env (`Db.getOrderStatusByRef` ref)
-                        pure (maybe st id newStatus)
+                    mInfo <- withDb env (`Db.paymentInfo` oid)
+                    case mInfo of
+                      Just (Just "stripe", Just sessionId) -> do
+                        mPayStatus <- liftIO
+                          (Stripe.fetchSessionStatus (envStripe env) sessionId)
+                        case mPayStatus of
+                          Just "paid" -> void . withDb env $ \conn ->
+                            Db.transition conn oid Paid
+                              (Just ("pago Stripe " <> sessionId))
+                          _ -> pure ()
+                      _ -> do
+                        mPayment <- liftIO (MP.searchPaymentByRef (envMp env) ref)
+                        case mPayment of
+                          Nothing -> pure ()
+                          Just (pid, mpStatus) ->
+                            applyPaymentStatus env oid pid mpStatus
+                    newStatus <- withDb env (`Db.getOrderStatusByRef` ref)
+                    pure (fromMaybe st newStatus)
             else pure st
           pure (OrderStatusResp ref st')
 
@@ -237,6 +269,41 @@ server env =
       when (bad (crName cr) || bad (crEmail cr) || bad (crMessage cr)) $
         throwError err400 { errBody = "nombre, email y mensaje son obligatorios" }
       withDb env (`Db.insertContactMessage` cr)
+      pure NoContent
+
+    paymentConfigH :: Handler PaymentConfig
+    paymentConfigH = pure . PaymentConfig $ concat
+      [ [ "mercadopago" | isJust (MP.mpAccessToken (envMp env)) ]
+      , [ "stripe"      | Stripe.enabled (envStripe env) ]
+      ]
+
+    -- Stripe signs the raw body, so this route takes bytes and decodes
+    -- JSON only after verification.
+    stripeWebhookH :: Maybe Text -> ByteString -> Handler NoContent
+    stripeWebhookH mSig rawBody = do
+      when (Stripe.verifySignature (envStripe env) mSig rawBody) $
+        case decodeStrict rawBody :: Maybe Value of
+          Just (Object o)
+            | Just (String evType) <- KM.lookup "type" o
+            , Just (Object dat)    <- KM.lookup "data" o
+            , Just (Object obj)    <- KM.lookup "object" dat
+            , Just (String sid)    <- KM.lookup "id" obj -> do
+                mOid <- withDb env (`Db.getOrderIdByStripeSession` sid)
+                case mOid of
+                  Nothing  -> pure ()
+                  Just oid -> case evType of
+                    t | t `elem` [ "checkout.session.completed"
+                                 , "checkout.session.async_payment_succeeded" ]
+                      , Just (String "paid") <- KM.lookup "payment_status" obj ->
+                        void . withDb env $ \conn ->
+                          Db.transition conn oid Paid (Just ("pago Stripe " <> sid))
+                    t | t `elem` [ "checkout.session.async_payment_failed"
+                                 , "checkout.session.expired" ] ->
+                        void . withDb env $ \conn ->
+                          Db.transition conn oid Cancelled (Just ("Stripe " <> t))
+                    _ -> pure ()
+          _ -> pure ()
+      -- Always 200: Stripe retries on anything else.
       pure NoContent
 
     webhookH :: Maybe Text -> Maybe Text -> Value -> Handler NoContent
