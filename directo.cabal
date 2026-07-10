@@ -1,7 +1,7 @@
 cabal-version:      2.4
-name:               storeApp
+name:               directo
 version:            0.1.0.0
-synopsis:           storeApp - A Reflex FRP application
+synopsis:           directo - A Reflex FRP application
 description:        A Reflex FRP application that can be built for web, Android, and iOS
 license:            BSD-3-Clause
 author:             hhefesto
@@ -9,7 +9,7 @@ maintainer:         hhefesto@rdataa.com
 category:           Web
 build-type:         Simple
 
-executable saClientFE
+executable dirClientFE
   main-is:          ClientFE.hs
   hs-source-dirs:   src
 
@@ -53,7 +53,7 @@ executable saClientFE
     TypeFamilies
     ConstraintKinds
 
-executable saAdminFE
+executable dirAdminFE
   main-is:          AdminFE.hs
   hs-source-dirs:   src
 
@@ -97,7 +97,7 @@ executable saAdminFE
     TypeFamilies
     ConstraintKinds
 
-executable saBackend
+executable dirBackend
   main-is:          Backend.hs
   hs-source-dirs:   src
 

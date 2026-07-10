@@ -34,10 +34,28 @@
         "type": "github"
       }
     },
+    "reflex-platform": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1765987711,
+        "narHash": "sha256-rBUekztvGKGMCwebHGN1duaKrp/5uxICnoYaBZDC4Kc=",
+        "owner": "reflex-frp",
+        "repo": "reflex-platform",
+        "rev": "a2c3455a210b3069f448a694bbd2780407d8692b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "reflex-frp",
+        "ref": "develop",
+        "repo": "reflex-platform",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "reflex-platform": "reflex-platform"
       }
     },
     "systems": {

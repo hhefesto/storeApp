@@ -1,63 +1,71 @@
 {
-  description = "storeApp - Reflex FRP Application";
+  description = "directo - Reflex FRP Application";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     flake-utils.url = "github:numtide/flake-utils";
+    reflex-platform = {
+      url = "github:reflex-frp/reflex-platform/develop";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = inputs@{ self, nixpkgs, flake-utils, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        # Import reflex-platform (remove sha256 to let Nix calculate it)
-        reflexPlatform = import (builtins.fetchTarball {
-          url = "https://github.com/reflex-frp/reflex-platform/archive/develop.tar.gz";
-          sha256 = "sha256:1vna7iyhl62sqicib34hs7haaaysxlpbj021qqp2v6fmsx25iyin";
-        }) {
+        reflexPlatform = import inputs.reflex-platform {
           inherit system;
           config.allowUnfree = true;
         };
+        # # Import reflex-platform (remove sha256 to let Nix calculate it)
+        # reflexPlatform = import (builtins.fetchTarball {
+        #   url = "https://github.com/reflex-frp/reflex-platform/archive/develop.tar.gz";
+        #   sha256 = "sha256:19z0qa80a6l6kq115fzrkyp8mrknfmiir6q71f6a263g7f9iw5dc";
+        # }) {
+        #   inherit system;
+        #   config.allowUnfree = true;
+        # };
 
         # Define our project using reflex-platform
         project = reflexPlatform.project ({ pkgs, ... }: {
-          name = "storeApp";
+          name = "directo";
 
           # Enable Warp for native builds
           useWarp = true;
 
           # Our packages - point to current directory
           packages = {
-            storeApp = ./.;
+            directo = ./.;
           };
 
           # Shells configuration
           shells = {
-            ghc = ["storeApp"];
-            ghcjs = ["storeApp"];
+            ghc = ["directo"];
+            ghcjs = ["directo"];
           };
 
           # # Android configuration
-          # android.saClientFE = {
-          #   executableName = "saClientFE";
+          # android.dirClientFE = {
+          #   executableName = "dirClientFE";
           #   applicationId = "com.example.rallm.client";
           #   displayName = "Store Client";
           # };
 
-          # android.saAdminFE = {
-          #   executableName = "saAdminFE";
+          # android.dirAdminFE = {
+          #   executableName = "dirAdminFE";
           #   applicationId = "com.example.rallm.admin";
           #   displayName = "Store Admin";
           # };
 
           # # iOS configuration (for future use)
-          # ios.saClientFE = {
-          #   executableName = "saClientFE";
+          # ios.dirClientFE = {
+          #   executableName = "dirClientFE";
           #   bundleIdentifier = "com.example.rallm.client";
           #   bundleName = "Store Client";
           # };
 
-          # ios.saAdminFE = {
-          #   executableName = "saAdminFE";
+          # ios.dirAdminFE = {
+          #   executableName = "dirAdminFE";
           #   bundleIdentifier = "com.example.rallm.admin";
           #   bundleName = "Store Admin";
           # };
@@ -69,9 +77,9 @@
         });
 
         # Helper functions to get the correct package outputs
-        getClientExe = pkg: "${pkg}/bin/saClientFE";
-        getAdminExe = pkg: "${pkg}/bin/saAdminFE";
-        getBackendExe = pkg: "${pkg}/bin/saBackend";
+        getClientExe = pkg: "${pkg}/bin/dirClientFE";
+        getAdminExe = pkg: "${pkg}/bin/dirAdminFE";
+        getBackendExe = pkg: "${pkg}/bin/dirBackend";
 
       in
       {
@@ -83,19 +91,19 @@
         };
 
         # Packages
-        packages = rec {
+        packages = {
           # Native executables
-          default = project.ghc.storeApp;
+          default = project.ghc.directo;
 
           # Web builds (GHCJS) - only for frontend apps
 
           # # Android builds
-          # androidClient = project.android.saClientFE;
-          # androidAdmin = project.android.saAdminFE;
+          # androidClient = project.android.dirClientFE;
+          # androidAdmin = project.android.dirAdminFE;
 
           # # iOS builds
-          # iosClient = project.ios.saClientFE;
-          # iosAdmin = project.ios.saAdminFE;
+          # iosClient = project.ios.dirClientFE;
+          # iosAdmin = project.ios.dirAdminFE;
         };
 
         # Apps for easy running
@@ -122,14 +130,14 @@
           serve-client = {
             type = "app";
             program = reflexPlatform.nixpkgs.writeShellScript "serve-client" ''
-              if [ ! -d "${self.packages.${system}.webClient}/bin/saClientFE.jsexe" ]; then
+              if [ ! -d "${self.packages.${system}.webClient}/bin/dirClientFE.jsexe" ]; then
                 echo "Building web client first..."
                 nix build .#webClient
               fi
               echo "Serving client web app at http://localhost:8080"
               echo "Press Ctrl+C to stop the server"
               ${reflexPlatform.nixpkgs.python3}/bin/python3 -m http.server 8080 \
-                --directory ${self.packages.${system}.webClient}/bin/saClientFE.jsexe
+                --directory ${self.packages.${system}.webClient}/bin/dirClientFE.jsexe
             '';
           };
 
@@ -137,14 +145,14 @@
           serve-admin = {
             type = "app";
             program = reflexPlatform.nixpkgs.writeShellScript "serve-admin" ''
-              if [ ! -d "${self.packages.${system}.webAdmin}/bin/saAdminFE.jsexe" ]; then
+              if [ ! -d "${self.packages.${system}.webAdmin}/bin/dirAdminFE.jsexe" ]; then
                 echo "Building web admin first..."
                 nix build .#webAdmin
               fi
               echo "Serving admin web app at http://localhost:8081"
               echo "Press Ctrl+C to stop the server"
               ${reflexPlatform.nixpkgs.python3}/bin/python3 -m http.server 8081 \
-                --directory ${self.packages.${system}.webAdmin}/bin/saAdminFE.jsexe
+                --directory ${self.packages.${system}.webAdmin}/bin/dirAdminFE.jsexe
             '';
           };
 
@@ -155,7 +163,7 @@
               echo "Starting Client Frontend in development mode with auto-reload..."
               echo "Edit src/ClientFE.hs and see changes instantly!"
               exec nix develop -c ghcid \
-                --command "cabal repl exe:saClientFE" \
+                --command "cabal repl exe:dirClientFE" \
                 --run=":main"
             '';
           };
@@ -167,7 +175,7 @@
               echo "Starting Admin Frontend in development mode with auto-reload..."
               echo "Edit src/AdminFE.hs and see changes instantly!"
               exec nix develop -c ghcid \
-                --command "cabal repl exe:saAdminFE" \
+                --command "cabal repl exe:dirAdminFE" \
                 --run=":main"
             '';
           };
@@ -179,7 +187,7 @@
               echo "Starting Backend in development mode with auto-reload..."
               echo "Edit src/Backend.hs and see changes instantly!"
               exec nix develop -c ghcid \
-                --command "cabal repl exe:saBackend" \
+                --command "cabal repl exe:dirBackend" \
                 --run=":main"
             '';
           };
