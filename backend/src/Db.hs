@@ -20,6 +20,12 @@ module Db
   , sessionExists
   , deleteSession
   , mpCheckDue
+  , upsertUser
+  , insertUserSession
+  , userForSession
+  , deleteUserSession
+  , attachOrderUser
+  , listOrdersForUser
   ) where
 
 import           Control.Exception          (Exception, throwIO)
@@ -316,3 +322,46 @@ sessionExists conn token = do
 deleteSession :: Connection -> Text -> IO ()
 deleteSession conn token = void $ execute conn
   "DELETE FROM admin_sessions WHERE token = ?" (Only token)
+
+-- ── customer accounts (social login) ────────────────────────────────────
+
+-- | Insert or refresh a user identified by (provider, subject); returns id.
+upsertUser :: Connection -> Text -> Text -> Text -> Text -> Maybe Text -> IO Int64
+upsertUser conn provider subject email uname picture = do
+  [Only uid] <- query conn
+    "INSERT INTO users (provider, provider_subject, email, name, picture) \
+    \VALUES (?,?,?,?,?) \
+    \ON CONFLICT (provider, provider_subject) \
+    \DO UPDATE SET email = EXCLUDED.email, name = EXCLUDED.name, picture = EXCLUDED.picture \
+    \RETURNING id"
+    (provider, subject, email, uname, picture)
+  pure uid
+
+insertUserSession :: Connection -> Text -> Int64 -> IO ()
+insertUserSession conn token uid = void $ execute conn
+  "INSERT INTO user_sessions (token, user_id) VALUES (?, ?)" (token, uid)
+
+-- | Resolve a (30-day) customer session to (userId, info).
+userForSession :: Connection -> Text -> IO (Maybe (Int64, UserInfo))
+userForSession conn token = do
+  rows <- query conn
+    "SELECT u.id, u.name, u.email, u.picture FROM user_sessions s \
+    \JOIN users u ON u.id = s.user_id \
+    \WHERE s.token = ? AND s.created_at > NOW() - interval '30 days'"
+    (Only token)
+  pure $ listToMaybe
+    [ (uid, UserInfo uname email picture)
+    | (uid, uname, email, picture) <- rows ]
+
+deleteUserSession :: Connection -> Text -> IO ()
+deleteUserSession conn token = void $ execute conn
+  "DELETE FROM user_sessions WHERE token = ?" (Only token)
+
+attachOrderUser :: Connection -> Int64 -> Int64 -> IO ()
+attachOrderUser conn oid uid = void $ execute conn
+  "UPDATE orders SET user_id = ? WHERE id = ?" (uid, oid)
+
+listOrdersForUser :: Connection -> Int64 -> IO [OrderSummary]
+listOrdersForUser conn uid = map rowToSummary <$> query conn
+  ("SELECT " <> summaryColumns <> " FROM orders WHERE user_id = ? ORDER BY created_at DESC")
+  (Only uid)

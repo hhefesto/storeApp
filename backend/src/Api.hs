@@ -22,10 +22,12 @@ import           Directo.Types
 import qualified Auth
 import qualified Db
 import qualified MercadoPago                as MP
+import qualified OAuth
 
 data AppEnv = AppEnv
   { envConn         :: MVar Connection
   , envMp           :: MP.MpConfig
+  , envOAuth        :: OAuth.OAuthEnv
   , envAdminHash    :: ByteString
   , envCookieSecure :: Bool
   , envStore        :: StoreAddress
@@ -34,11 +36,23 @@ data AppEnv = AppEnv
 
 type CookieHeader = Header "Cookie" Text
 type SetCookie a  = Headers '[Header "Set-Cookie" Text] a
+type Redirect     = Verb 'GET 302 '[JSON]
+                      (Headers '[Header "Location" Text] NoContent)
+type RedirectWithCookie = Verb 'GET 302 '[JSON]
+                      (Headers '[Header "Location" Text, Header "Set-Cookie" Text] NoContent)
 
 type API
   =    "api" :> "health"   :> Get '[JSON] Value
   :<|> "api" :> "products" :> Get '[JSON] [Product]
-  :<|> "api" :> "orders"   :> ReqBody '[JSON] CheckoutReq :> Post '[JSON] CheckoutResp
+  :<|> "api" :> "orders"   :> CookieHeader :> ReqBody '[JSON] CheckoutReq :> Post '[JSON] CheckoutResp
+  -- social login (provider-generic; /api/auth/config lists what's enabled)
+  :<|> "api" :> "auth" :> "config" :> Get '[JSON] AuthConfig
+  :<|> "api" :> "auth" :> Capture "provider" Text :> "login" :> Redirect
+  :<|> "api" :> "auth" :> Capture "provider" Text :> "callback"
+         :> QueryParam "code" Text :> QueryParam "state" Text :> RedirectWithCookie
+  :<|> "api" :> "me" :> CookieHeader :> Get '[JSON] UserInfo
+  :<|> "api" :> "logout" :> CookieHeader :> Post '[JSON] (SetCookie NoContent)
+  :<|> "api" :> "my-orders" :> CookieHeader :> Get '[JSON] [OrderSummary]
   :<|> "api" :> "orders"   :> Capture "ref" Text :> "status" :> Get '[JSON] OrderStatusResp
   :<|> "api" :> "webhooks" :> "mercadopago"
          :> Header "x-signature" Text :> Header "x-request-id" Text
@@ -72,6 +86,12 @@ server env =
        healthH
   :<|> productsH
   :<|> checkoutH
+  :<|> authConfigH
+  :<|> authLoginH
+  :<|> authCallbackH
+  :<|> userMeH
+  :<|> userLogoutH
+  :<|> myOrdersH
   :<|> orderStatusH
   :<|> webhookH
   :<|> loginH
@@ -95,8 +115,8 @@ server env =
     productsH :: Handler [Product]
     productsH = withDb env Db.listProducts
 
-    checkoutH :: CheckoutReq -> Handler CheckoutResp
-    checkoutH req = do
+    checkoutH :: Maybe Text -> CheckoutReq -> Handler CheckoutResp
+    checkoutH mCookie req = do
       result <- withDb env $ \conn -> try (Db.createOrder conn req)
       case result of
         Left Db.EmptyCart ->
@@ -106,6 +126,11 @@ server env =
         Left (Db.OutOfStock _) ->
           throwError err409 { errBody = "sin existencias" }
         Right (oid, ref, _total) -> do
+          -- Link the order to the signed-in customer, if any.
+          mUser <- currentUser env mCookie
+          case mUser of
+            Just (uid, _) -> void . withDb env $ \conn -> Db.attachOrderUser conn oid uid
+            Nothing       -> pure ()
           mDetail <- withDb env (`Db.getOrderDetail` oid)
           let orderLines = maybe [] odLines mDetail
           mPref <- liftIO (MP.createPreference (envMp env) ref orderLines)
@@ -116,6 +141,59 @@ server env =
                 Db.setPreference conn oid prefId
                 Db.transition conn oid PendingPayment (Just "preferencia de pago creada")
               pure (CheckoutResp ref (Just initPointUrl))
+
+    authConfigH :: Handler AuthConfig
+    authConfigH = pure (AuthConfig (OAuth.providerNames (envOAuth env)))
+
+    authLoginH :: Text -> Handler (Headers '[Header "Location" Text] NoContent)
+    authLoginH providerName =
+      case OAuth.lookupProvider (envOAuth env) providerName of
+        Nothing -> throwError err404 { errBody = "proveedor no habilitado" }
+        Just p  -> do
+          url <- liftIO (OAuth.authorizeUrl (envOAuth env) p)
+          pure (addHeader url NoContent)
+
+    authCallbackH :: Text -> Maybe Text -> Maybe Text
+                  -> Handler (Headers '[Header "Location" Text, Header "Set-Cookie" Text] NoContent)
+    authCallbackH providerName mCode mState = do
+      let failRedirect = pure $
+            addHeader "/#/cuenta?login=error" (addHeader "" NoContent)
+      case (OAuth.lookupProvider (envOAuth env) providerName, mCode, mState) of
+        (Just p, Just code, Just st) -> do
+          okState <- liftIO (OAuth.consumeState (envOAuth env) st)
+          if not okState then failRedirect else do
+            mClaims <- liftIO (OAuth.exchangeCode (envOAuth env) p code)
+            case mClaims of
+              Nothing -> failRedirect
+              Just claims -> do
+                token <- liftIO Auth.generateToken
+                void . withDb env $ \conn -> do
+                  uid <- Db.upsertUser conn providerName
+                           (OAuth.cSubject claims) (OAuth.cEmail claims)
+                           (OAuth.cName claims) (OAuth.cPicture claims)
+                  Db.insertUserSession conn token uid
+                pure $ addHeader "/#/cuenta?login=ok"
+                  (addHeader (Auth.userCookie (envCookieSecure env) token) NoContent)
+        _ -> failRedirect
+
+    userMeH :: Maybe Text -> Handler UserInfo
+    userMeH mCookie = do
+      mUser <- currentUser env mCookie
+      maybe (throwError err401) (pure . snd) mUser
+
+    userLogoutH :: Maybe Text -> Handler (SetCookie NoContent)
+    userLogoutH mCookie = do
+      case mCookie >>= Auth.userCookieToken of
+        Just token -> void $ withDb env (`Db.deleteUserSession` token)
+        Nothing    -> pure ()
+      pure (addHeader (Auth.clearUserCookie (envCookieSecure env)) NoContent)
+
+    myOrdersH :: Maybe Text -> Handler [OrderSummary]
+    myOrdersH mCookie = do
+      mUser <- currentUser env mCookie
+      case mUser of
+        Nothing       -> throwError err401
+        Just (uid, _) -> withDb env $ \conn -> Db.listOrdersForUser conn uid
 
     orderStatusH :: Text -> Handler OrderStatusResp
     orderStatusH ref = do
@@ -261,6 +339,12 @@ applyPaymentStatus env oid paymentId mpStatus = do
       s | s `elem` ["rejected", "cancelled", "refunded", "charged_back"] ->
         Db.transition conn oid Cancelled (Just ("pago MP " <> s))
       _ -> pure False
+
+currentUser :: AppEnv -> Maybe Text -> Handler (Maybe (Int64, UserInfo))
+currentUser env mCookie =
+  case mCookie >>= Auth.userCookieToken of
+    Nothing    -> pure Nothing
+    Just token -> withDb env (`Db.userForSession` token)
 
 requireAdmin :: AppEnv -> Maybe Text -> Handler ()
 requireAdmin env mCookie =

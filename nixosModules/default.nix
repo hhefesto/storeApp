@@ -275,7 +275,9 @@ in {
           ExecStart   = "${cfg.packages.backend}/bin/directo-backend";
           Restart     = "on-failure";
           DynamicUser = true;
-        } // lib.optionalAttrs production {
+        } // lib.optionalAttrs (production || cfg.secrets.backendEnvFile != null) {
+          # In development an explicit backendEnvFile can supply optional
+          # credentials (Mercado Pago token, Google OAuth client id/secret).
           EnvironmentFile = [ backendEnvFile ];
         };
       };

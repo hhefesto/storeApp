@@ -27,6 +27,8 @@ module Directo.Types
   , GuiaDhl(..)
   , LoginRequest(..)
   , ShipReq(..)
+  , UserInfo(..)
+  , AuthConfig(..)
   , centsToMxn
   ) where
 
@@ -227,6 +229,21 @@ newtype ShipReq = ShipReq
 
 instance ToJSON ShipReq
 instance FromJSON ShipReq
+
+-- | The signed-in customer, as exposed to the frontend.
+data UserInfo = UserInfo
+  { uiName    :: Text
+  , uiEmail   :: Text
+  , uiPicture :: Maybe Text
+  } deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+-- | Which social-login providers the backend has credentials for.
+newtype AuthConfig = AuthConfig
+  { acProviders :: [Text]   -- ^ e.g. ["google"]
+  } deriving (Show, Eq, Generic)
+
+instance ToJSON AuthConfig
+instance FromJSON AuthConfig
 
 -- | Render centavos as \"$1,234.50\".
 centsToMxn :: Int -> Text

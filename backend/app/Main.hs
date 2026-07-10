@@ -12,6 +12,7 @@ import qualified Auth
 import qualified Db
 import           Directo.Types            (StoreAddress (..))
 import qualified MercadoPago              as MP
+import qualified OAuth
 
 main :: IO ()
 main = do
@@ -20,6 +21,7 @@ main = do
   conn      <- Db.initDb
   connVar   <- newMVar conn
   mp        <- MP.loadConfig
+  oauth     <- OAuth.loadOAuthEnv (MP.mpPublicBaseUrl mp) (MP.mpManager mp)
   adminHash <- Auth.getPasswordHash
   secure    <- (== Just "1") <$> lookupEnv "DIRECTO_COOKIE_SECURE"
   store     <- loadStoreAddress
@@ -28,6 +30,7 @@ main = do
   Warp.run port $ Api.app Api.AppEnv
     { Api.envConn                = connVar
     , Api.envMp                  = mp
+    , Api.envOAuth               = oauth
     , Api.envAdminHash           = adminHash
     , Api.envCookieSecure        = secure
     , Api.envStore               = store

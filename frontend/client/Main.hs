@@ -41,6 +41,7 @@ data View
   | VCarrito
   | VCheckout
   | VConfirmacion
+  | VCuenta
   | VPago Text Text   -- ^ kind (exito|error|pendiente), order ref
   deriving (Eq, Show)
 
@@ -73,7 +74,9 @@ parsePayHash h =
 bodyW :: MonadWidget t m => m ()
 bodyW = do
   hash <- locationHash
-  let initialView = maybe VCatalogo (uncurry VPago) (parsePayHash hash)
+  let initialView
+        | "#/cuenta" `T.isPrefixOf` hash = VCuenta
+        | otherwise = maybe VCatalogo (uncurry VPago) (parsePayHash hash)
 
   storedCart <- localStorageGet "directo-cart"
   let initialCart :: Cart
@@ -86,7 +89,17 @@ bodyW = do
   productsE <- getAndDecode (("/api/products" :: Text) <$ pb)
   productsDyn <- holdDyn [] (fromMaybe [] <$> productsE)
 
+  -- signed-in customer (Nothing until /api/me answers)
+  meRespE <- performRequestAsync (getJson "/api/me" <$ pb)
+  authCfgE <- getAndDecode (("/api/auth/config" :: Text) <$ pb)
+  providersDyn <- holdDyn [] (maybe [] acProviders <$> authCfgE)
+
   rec
+    userDyn <- holdDyn Nothing $ leftmost
+      [ (decodeXhr :: XhrResponse -> Maybe UserInfo) <$> meRespE
+      , Nothing <$ loggedOutE
+      ]
+
     viewDyn <- holdDyn initialView navE
 
     cartDyn <- foldDyn (flip (foldl' (flip applyOp))) initialCart opsE
@@ -95,16 +108,17 @@ bodyW = do
     performEvent_ $ ffor (updated cartDyn) $ \c ->
       localStorageSet "directo-cart" (TE.decodeUtf8 (BL.toStrict (encode c)))
 
-    navTopE <- topbar cartDyn
+    navTopE <- topbar cartDyn userDyn
 
     (navCatE, opsCatE) <- viewShell viewDyn VCatalogo (catalogo productsDyn)
     (navCarE, opsCarE) <- viewShell viewDyn VCarrito (carrito productsDyn cartDyn)
-    (navChkE, opsChkE, confRefE) <- checkoutShell viewDyn productsDyn cartDyn
+    (navChkE, opsChkE, confRefE) <- checkoutShell viewDyn productsDyn cartDyn userDyn
     confRefDyn <- holdDyn "" confRefE
     navConfE <- viewShell1 viewDyn VConfirmacion (confirmacion confRefDyn)
+    (navCtaE, loggedOutE) <- cuentaView viewDyn userDyn providersDyn
     navPagoE <- pagoView viewDyn initialView
 
-    let navE = leftmost [navTopE, navCatE, navCarE, navChkE, navConfE, navPagoE]
+    let navE = leftmost [navTopE, navCatE, navCarE, navChkE, navConfE, navCtaE, navPagoE]
         opsE = leftmost [opsCatE, opsCarE, opsChkE]
   pure ()
 
@@ -127,19 +141,23 @@ shellAttrs me v =
 
 -- ── topbar ──────────────────────────────────────────────────────────────
 
-topbar :: MonadWidget t m => Dynamic t Cart -> m (Event t View)
-topbar cartDyn = elClass "header" "topbar" $ do
+topbar :: MonadWidget t m
+       => Dynamic t Cart -> Dynamic t (Maybe UserInfo) -> m (Event t View)
+topbar cartDyn userDyn = elClass "header" "topbar" $ do
   elClass "div" "brand" $ do
     text "DIRECTO"
     el "small" $ text "Refacciones para Electrodomésticos · Querétaro"
   elClass "div" "spacer" blank
   (catBtn, _) <- elAttr' "button" ("class" =: "navbtn") $ text "Catálogo"
+  (ctaBtn, _) <- elAttr' "button" ("class" =: "navbtn") $
+    dynText (maybe "Iniciar sesión" uiName <$> userDyn)
   (carBtn, _) <- elAttr' "button" ("class" =: "navbtn primary") $ do
     text "Carrito"
     let n = M.foldr (+) 0 <$> cartDyn
     elClass "span" "cartbadge" $ dynText (T.pack . show <$> n)
   pure $ leftmost
     [ VCatalogo <$ domEvent Click catBtn
+    , VCuenta   <$ domEvent Click ctaBtn
     , VCarrito  <$ domEvent Click carBtn
     ]
 
@@ -256,17 +274,21 @@ cartRow (p, q) = el "tr" $ do
 
 checkoutShell :: MonadWidget t m
               => Dynamic t View -> Dynamic t [Product] -> Dynamic t Cart
+              -> Dynamic t (Maybe UserInfo)
               -> m (Event t View, Event t [CartOp], Event t Text)
-checkoutShell viewDyn productsDyn cartDyn =
+checkoutShell viewDyn productsDyn cartDyn userDyn =
   elDynAttr "div" (shellAttrs VCheckout <$> viewDyn) $ do
     elClass "h2" "h2" $ text "Datos de envío"
     elClass "p" "muted" $
       text "Enviamos a todo México por DHL desde Querétaro."
 
+    -- prefill from the signed-in account (fires on login and at startup)
+    let prefillE = fmapMaybe id (updated userDyn)
+
     (reqDyn, validDyn) <- elClass "div" "panel" $ do
       (nameD, emailD, phoneD) <- elClass "div" "formgrid" $ do
-        n <- field "Nombre completo *" "text"
-        e <- field "Correo electrónico *" "email"
+        n <- fieldSet "Nombre completo *" "text" (uiName <$> prefillE)
+        e <- fieldSet "Correo electrónico *" "email" (uiEmail <$> prefillE)
         p <- field "Teléfono *" "tel"
         pure (n, e, p)
       (calleD, numD, colD, cpD) <- elClass "div" "formgrid" $ do
@@ -320,11 +342,13 @@ checkoutShell viewDyn productsDyn cartDyn =
     pure (navE, opsE, devDoneE)
   where
     nonEmpty t = let s = T.strip t in if T.null s then Nothing else Just s
-    field label typ = elClass "div" "field" $ do
+    field label typ = fieldSet label typ never
+    fieldSet label typ setE = elClass "div" "field" $ do
       el "label" $ text label
       ti <- inputElement $ def
         & inputElementConfig_elementConfig . elementConfig_initialAttributes .~
             ("type" =: typ)
+        & inputElementConfig_setValue .~ setE
       pure (_inputElement_value ti)
 
 -- ── confirmación (sin pago en línea) ────────────────────────────────────
@@ -340,6 +364,69 @@ confirmacion refDyn = elClass "div" "panel" $ do
     text "El pago en línea no está disponible en este entorno. Nos pondremos en contacto contigo para coordinar el pago y el envío."
   (btn, _) <- elAttr' "button" ("class" =: "cta") $ text "Volver al catálogo"
   pure (VCatalogo <$ domEvent Click btn)
+
+-- ── cuenta (inicio de sesión social y mis pedidos) ──────────────────────
+
+providerLabel :: Text -> Text
+providerLabel = \case
+  "google"   -> "Google"
+  "facebook" -> "Facebook"
+  other      -> other
+
+-- | Login screen (provider buttons) or, when signed in, profile + order
+-- history. Returns (navigation, logged-out) events.
+cuentaView :: MonadWidget t m
+           => Dynamic t View -> Dynamic t (Maybe UserInfo) -> Dynamic t [Text]
+           -> m (Event t View, Event t ())
+cuentaView viewDyn userDyn providersDyn =
+  elDynAttr "div" (shellAttrs VCuenta <$> viewDyn) $ do
+    resultEE <- dyn $ ffor ((,) <$> userDyn <*> providersDyn) $ \case
+      (Nothing, providers) -> do
+        elClass "div" "panel" $ do
+          elClass "h2" "h2" $ text "Iniciar sesión"
+          if null providers
+            then elClass "p" "muted" $
+              text "El inicio de sesión no está disponible en este entorno (sin credenciales de proveedor)."
+            else do
+              elClass "p" "muted" $
+                text "Inicia sesión para guardar tus datos y consultar tus pedidos."
+              elClass "div" "rowbtns" $ forM_ providers $ \p -> do
+                (btn, _) <- elAttr' "button" ("class" =: "cta") $
+                  text ("Continuar con " <> providerLabel p)
+                performEvent_ $
+                  redirectTo ("/api/auth/" <> p <> "/login") <$ domEvent Click btn
+        pure never
+
+      (Just user, _) -> do
+        elClass "div" "panel" $ do
+          elClass "h2" "h2" $ text ("Hola, " <> uiName user)
+          elClass "p" "muted" $ text (uiEmail user)
+          (outBtn, _) <- elClass "div" "rowbtns" $
+            elAttr' "button" mempty $ text "Cerrar sesión"
+          outRespE <- performRequestAsync
+            (postEmptyXhr "/api/logout" <$ domEvent Click outBtn)
+
+          elClass "h2" "h2" $ text "Mis pedidos"
+          pb <- getPostBuild
+          ordersE <- getAndDecode (("/api/my-orders" :: Text) <$ pb)
+          ordersDyn <- holdDyn [] (fromMaybe [] <$> ordersE)
+          el "table" $ do
+            el "thead" $ el "tr" $
+              forM_ ["Pedido", "Fecha", "Total", "Estado", "Guía DHL"] (el "th" . text)
+            el "tbody" $ dyn_ $ ffor ordersDyn $ \os ->
+              if null os
+                then el "tr" $ elAttr "td" ("colspan" =: "5") $
+                       elClass "span" "muted" $ text "Aún no tienes pedidos."
+                else forM_ os $ \o -> el "tr" $ do
+                  el "td" $ el "strong" $ text (osRef o)
+                  el "td" $ text (T.take 10 (T.pack (show (osCreatedAt o))))
+                  el "td" $ text (mxn (osTotalCents o))
+                  el "td" $ elClass "span" ("badge " <> orderStatusToText (osStatus o)) $
+                    text (orderStatusLabel (osStatus o))
+                  el "td" $ text (fromMaybe "—" (osWaybill o))
+          pure (() <$ outRespE)
+    loggedOutE <- switchHold never resultEE
+    pure (never, loggedOutE)
 
 -- ── resultado de pago (back-urls de Mercado Pago) ───────────────────────
 

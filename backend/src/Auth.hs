@@ -5,6 +5,9 @@ module Auth
   , sessionCookie
   , clearSessionCookie
   , cookieToken
+  , userCookie
+  , clearUserCookie
+  , userCookieToken
   ) where
 
 import           Crypto.BCrypt         (validatePassword)
@@ -51,10 +54,30 @@ clearSessionCookie secure =
   "directo_admin=deleted; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
     <> (if secure then "; Secure" else "")
 
+-- | Customer session cookie. SameSite=Lax (not Strict) so it survives the
+-- top-level redirect back from the OAuth provider.
+userCookie :: Bool -> Text -> Text
+userCookie secure token =
+  "directo_user=" <> token
+    <> "; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000"
+    <> (if secure then "; Secure" else "")
+
+clearUserCookie :: Bool -> Text
+clearUserCookie secure =
+  "directo_user=deleted; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    <> (if secure then "; Secure" else "")
+
 -- | Extract the admin session token from a Cookie header value.
 cookieToken :: Text -> Maybe Text
-cookieToken header =
+cookieToken = namedCookie "directo_admin"
+
+-- | Extract the customer session token from a Cookie header value.
+userCookieToken :: Text -> Maybe Text
+userCookieToken = namedCookie "directo_user"
+
+namedCookie :: Text -> Text -> Maybe Text
+namedCookie name header =
   let pairs = map (T.breakOn "=") (map T.strip (T.splitOn ";" header))
-  in T.drop 1 . snd <$> lookup' "directo_admin" pairs
+  in T.drop 1 . snd <$> lookup' name pairs
   where
     lookup' k = foldr (\(k', v) acc -> if k' == k then Just (k', v) else acc) Nothing
